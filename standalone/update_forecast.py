@@ -21,12 +21,11 @@ import joblib
 import numpy as np
 import pandas as pd
 from tensorflow import keras
+from features import build_df_model_from_csv, build_next_24_features_from_df_model
 
-from .features import build_df_model_from_csv, build_next_24_features_from_df_model
 
-ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data"
-MODELS_DIR = ROOT / "models"
+DATA_DIR = Path(__file__).parent / "data"
+MODELS_DIR = Path(__file__).parent / "models"
 
 
 def load_models():

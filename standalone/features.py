@@ -8,11 +8,9 @@ feature-engineering code from the notebook (merge, lags, rollings, etc.).
 """
 
 from pathlib import Path
-
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data"
+DATA_DIR = Path(__file__).parent / "data"
 
 
 def load_raw_from_csv() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -42,45 +40,62 @@ def build_df_model_from_csv() -> pd.DataFrame:
 
     prices, weather, fingrid = load_raw_from_csv()
 
+    # Drop duplicate index values to avoid resample errors
+    prices = prices[~prices.index.duplicated(keep='first')]
+
     # 1) Resample/align to 15-min grid
-    prices_15min = prices.resample("15T").ffill()
-    weather_15min = weather.resample("15T").ffill()
-    fingrid_15min = fingrid.resample("15T").ffill()
+    prices_15min = prices.resample("15min").ffill()
+    weather_15min = weather.resample("15min").mean().ffill()
+    fingrid_15min = fingrid.resample("15min").mean().ffill()
 
     # 2) Merge into df_full
     df_full = prices_15min.join([weather_15min, fingrid_15min], how="outer")
+    print(f"df_full shape after merge: {df_full.shape}")
+    # Print summary statistics after feature engineering
+    print("\nData summary after feature engineering:")
+    desc = df_full.describe(include='all').T
+    nan_count = df_full.isna().sum()
+    for col in df_full.columns:
+        print(f"{col:25} count={desc.at[col, 'count']:.0f} mean={desc.at[col, 'mean'] if 'mean' in desc.columns else 'NA'} std={desc.at[col, 'std'] if 'std' in desc.columns else 'NA'} min={desc.at[col, 'min'] if 'min' in desc.columns else 'NA'} max={desc.at[col, 'max'] if 'max' in desc.columns else 'NA'} NaNs={nan_count[col]}")
 
-    # 3) Create target: 1h ahead price (rolling mean, shifted -4)
-    df_full["target_price_1h_ahead"] = df_full["price"].rolling(4).mean().shift(-4)
+    # Rename columns to match model expectations
+    rename_map = {
+        "price_ct_per_kwh": "price_ct_per_kwh",
+        "temperature_C": "temp_avg_c",
+        "windspeed_ms": "wind_speed_ms",
+        "gen_total_mw": "gen_total_mw",
+        "gen_wind_mw": "gen_wind_mw",
+        "cons_total_mw": "cons_total_mw",
+        # Add more mappings if needed
+    }
+    df_full = df_full.rename(columns=rename_map)
 
-    # 4) Lag/rolling features (example: price, temperature, windspeed, rain, consumption)
-    for col in ["price", "temperature_C", "windspeed_ms", "rain_mm", "consumption_MW"]:
+    # Create price lags 1-4
+    if "price_ct_per_kwh" in df_full:
+        for lag in range(1, 5):
+            df_full[f"price_lag_{lag}"] = df_full["price_ct_per_kwh"].shift(lag)
+
+    # Create other lags (1 and 4) for main features
+    for col in ["temp_avg_c", "wind_speed_ms", "rain_mm", "gen_total_mw", "gen_wind_mw", "cons_total_mw"]:
         if col in df_full:
-            df_full[f"{col}_lag1"] = df_full[col].shift(1)
-            df_full[f"{col}_roll4mean"] = df_full[col].rolling(4).mean()
-            df_full[f"{col}_roll12mean"] = df_full[col].rolling(12).mean()
+            df_full[f"{col}_lag_1"] = df_full[col].shift(1)
+            df_full[f"{col}_lag_4"] = df_full[col].shift(4)
 
-    # 5) Calendar features
-    df_full["hour"] = df_full.index.hour
-    df_full["weekday"] = df_full.index.weekday
-    df_full["month"] = df_full.index.month
-    df_full["is_weekend"] = (df_full["weekday"] >= 5).astype(int)
+    # Add calendar features
+    df_full["dayofweek"] = df_full.index.dayofweek if hasattr(df_full.index, 'dayofweek') else df_full.index.to_series().dt.dayofweek
+    df_full["hour"] = df_full.index.hour if hasattr(df_full.index, 'hour') else df_full.index.to_series().dt.hour
+    df_full["is_weekend"] = df_full["dayofweek"].isin([5, 6]).astype(int)
 
-    # 6) Select modeling columns (example: adjust as needed)
-    feature_cols = [
-        "price", "price_lag1", "price_roll4mean", "price_roll12mean",
-        "temperature_C", "temperature_C_lag1", "temperature_C_roll4mean", "temperature_C_roll12mean",
-        "windspeed_ms", "windspeed_ms_lag1", "windspeed_ms_roll4mean", "windspeed_ms_roll12mean",
-        "rain_mm", "rain_mm_lag1", "rain_mm_roll4mean", "rain_mm_roll12mean",
-        "consumption_MW", "consumption_MW_lag1", "consumption_MW_roll4mean", "consumption_MW_roll12mean",
-        "hour", "weekday", "month", "is_weekend"
-    ]
-    # Only keep columns that exist
-    feature_cols = [c for c in feature_cols if c in df_full.columns]
-    df_model = df_full[["target_price_1h_ahead"] + feature_cols]
+    # Create rolling mean features (example: 1h and 4h for price)
+    if "price_ct_per_kwh" in df_full:
+        df_full["price_roll_mean_1h"] = df_full["price_ct_per_kwh"].rolling(4).mean()
+        df_full["price_roll_mean_4h"] = df_full["price_ct_per_kwh"].rolling(16).mean()
 
-    # 7) Drop NA
-    df_model = df_model.dropna()
+    # Target (example: 1h ahead price)
+    df_full["target_price_1h_ahead"] = df_full["price_ct_per_kwh"].rolling(4).mean().shift(-4)
+
+    # Return all columns for modeling (dropna at the end)
+    df_model = df_full.dropna()
     return df_model
 
 
