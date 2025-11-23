@@ -1,4 +1,5 @@
-"""Update next-24h price forecasts and write them to CSV.
+"""
+Update next-24h price forecasts and write them to CSV.
 
 Expected artifacts (created by the notebook save cell):
   - models/gbr_model.joblib      (contains {"model": gbr, "feature_cols": [...]})
