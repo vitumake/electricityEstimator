@@ -42,19 +42,46 @@ def build_df_model_from_csv() -> pd.DataFrame:
 
     prices, weather, fingrid = load_raw_from_csv()
 
-    # TODO: COPY FEATURE PIPELINE FROM NOTEBOOK HERE
-    # Steps typically are:
-    #   1) Resample/align prices, weather, fingrid to a common 15-minute grid
-    #   2) Merge into df_full
-    #   3) Create target_price_1h_ahead (4x15min rolling mean shifted -4)
-    #   4) Add lag/rolling features for price, weather, fingrid
-    #   5) Add calendar features (hour, weekday, etc.)
-    #   6) Select modeling columns -> df_model = df_full[["target_price_1h_ahead", ...feature cols...]]
-    #   7) df_model = df_model.dropna()
+    # 1) Resample/align to 15-min grid
+    prices_15min = prices.resample("15T").ffill()
+    weather_15min = weather.resample("15T").ffill()
+    fingrid_15min = fingrid.resample("15T").ffill()
 
-    raise NotImplementedError(
-        "Implement build_df_model_from_csv by copying the df_model construction from the notebook."
-    )
+    # 2) Merge into df_full
+    df_full = prices_15min.join([weather_15min, fingrid_15min], how="outer")
+
+    # 3) Create target: 1h ahead price (rolling mean, shifted -4)
+    df_full["target_price_1h_ahead"] = df_full["price"].rolling(4).mean().shift(-4)
+
+    # 4) Lag/rolling features (example: price, temperature, windspeed, rain, consumption)
+    for col in ["price", "temperature_C", "windspeed_ms", "rain_mm", "consumption_MW"]:
+        if col in df_full:
+            df_full[f"{col}_lag1"] = df_full[col].shift(1)
+            df_full[f"{col}_roll4mean"] = df_full[col].rolling(4).mean()
+            df_full[f"{col}_roll12mean"] = df_full[col].rolling(12).mean()
+
+    # 5) Calendar features
+    df_full["hour"] = df_full.index.hour
+    df_full["weekday"] = df_full.index.weekday
+    df_full["month"] = df_full.index.month
+    df_full["is_weekend"] = (df_full["weekday"] >= 5).astype(int)
+
+    # 6) Select modeling columns (example: adjust as needed)
+    feature_cols = [
+        "price", "price_lag1", "price_roll4mean", "price_roll12mean",
+        "temperature_C", "temperature_C_lag1", "temperature_C_roll4mean", "temperature_C_roll12mean",
+        "windspeed_ms", "windspeed_ms_lag1", "windspeed_ms_roll4mean", "windspeed_ms_roll12mean",
+        "rain_mm", "rain_mm_lag1", "rain_mm_roll4mean", "rain_mm_roll12mean",
+        "consumption_MW", "consumption_MW_lag1", "consumption_MW_roll4mean", "consumption_MW_roll12mean",
+        "hour", "weekday", "month", "is_weekend"
+    ]
+    # Only keep columns that exist
+    feature_cols = [c for c in feature_cols if c in df_full.columns]
+    df_model = df_full[["target_price_1h_ahead"] + feature_cols]
+
+    # 7) Drop NA
+    df_model = df_model.dropna()
+    return df_model
 
 
 def build_next_24_features_from_df_model(df_model: pd.DataFrame) -> pd.DataFrame:
@@ -68,3 +95,13 @@ def build_next_24_features_from_df_model(df_model: pd.DataFrame) -> pd.DataFrame
     if len(X) < 24:
         raise ValueError(f"Need at least 24 rows to build next-24 features, got {len(X)}")
     return X.tail(24)
+
+def check_feature_compatibility(df_model, gbr_features, nn_features):
+    """Prints which features are present/missing for each model."""
+    model_cols = set(df_model.columns)
+    gbr_set = set(gbr_features)
+    nn_set = set(nn_features)
+    print("\n[GBR] Features in model but missing in df_model:", sorted(gbr_set - model_cols))
+    print("[GBR] Features in df_model but not used by model:", sorted(model_cols - gbr_set))
+    print("[NN] Features in model but missing in df_model:", sorted(nn_set - model_cols))
+    print("[NN] Features in df_model but not used by model:", sorted(model_cols - nn_set))
