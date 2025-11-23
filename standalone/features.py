@@ -107,9 +107,9 @@ def build_next_24_features_from_df_model(df_model: pd.DataFrame) -> pd.DataFrame
 
     df_clean = df_model.dropna().copy()
     X = df_clean.drop(columns=["target_price_1h_ahead"])
-    if len(X) < 24:
-        raise ValueError(f"Need at least 24 rows to build next-24 features, got {len(X)}")
-    return X.tail(24)
+    if len(X) < 96:
+        raise ValueError(f"Need at least 96 rows to build next-24h features, got {len(X)}")
+    return X.tail(96)
 
 def check_feature_compatibility(df_model, gbr_features, nn_features):
     """Prints which features are present/missing for each model."""
